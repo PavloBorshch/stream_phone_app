@@ -1,6 +1,6 @@
 import 'package:flutter/material.dart';
 import 'core/app_theme.dart';
-import 'features/camera/presentation/camera_screen.dart';
+import 'features/capture/presentation/capture_screen.dart';
 
 void main() {
   WidgetsFlutterBinding.ensureInitialized();
@@ -20,7 +20,7 @@ class StreamingApp extends StatelessWidget {
       darkTheme: AppTheme.darkTheme,
       themeMode: ThemeMode.dark,
       
-      home: const CameraScreen(),
+      home: const CaptureScreen(),
     );
   }
 }

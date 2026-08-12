@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<!-- TODO: replace with a real App Group id once the app has a real
+	     (non com.example.*) bundle identifier. Must match Runner.entitlements
+	     and the appGroupID constants in ScreencastChannel.swift / SampleHandler.swift. -->
+	<key>com.apple.security.application-groups</key>
+	<array>
+		<string>group.com.example.stream_phone_cam.shared</string>
+	</array>
+</dict>
+</plist>

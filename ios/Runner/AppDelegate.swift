@@ -10,7 +10,13 @@ import UIKit
     return super.application(application, didFinishLaunchingWithOptions: launchOptions)
   }
 
+  private let screencastChannel = ScreencastChannel()
+
   func didInitializeImplicitFlutterEngine(_ engineBridge: FlutterImplicitEngineBridge) {
     GeneratedPluginRegistrant.register(with: engineBridge.pluginRegistry)
+
+    let registrar = engineBridge.pluginRegistry.registrar(forPlugin: "ScreencastPlugin")
+    screencastChannel.register(messenger: registrar.messenger())
+    registrar.register(BroadcastPickerViewFactory(), withId: "com.streamphonecam/broadcast_picker_view")
   }
 }
