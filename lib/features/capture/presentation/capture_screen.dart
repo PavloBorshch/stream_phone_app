@@ -1,80 +1,61 @@
-import 'dart:async';
 import 'dart:io';
 
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:go_router/go_router.dart';
 
+import '../../../core/session/stream_session_provider.dart';
 import '../../camera/presentation/camera_preview_pane.dart';
-import '../../screencast/data/screencast_platform.dart';
 import '../../screencast/domain/screencast_status.dart';
 import '../../screencast/presentation/screencast_preview_pane.dart';
 import '../../screencast/presentation/widgets/broadcast_picker_button.dart';
 import '../domain/capture_mode.dart';
 import 'widgets/capture_mode_toggle.dart';
 
-class CaptureScreen extends StatefulWidget {
+class CaptureScreen extends ConsumerStatefulWidget {
   const CaptureScreen({super.key});
 
   @override
-  State<CaptureScreen> createState() => _CaptureScreenState();
+  ConsumerState<CaptureScreen> createState() => _CaptureScreenState();
 }
 
-class _CaptureScreenState extends State<CaptureScreen> {
+class _CaptureScreenState extends ConsumerState<CaptureScreen> {
   static const double _expansionBarHeight = 48;
-
-  final ScreencastPlatform _screencastPlatform = ScreencastPlatform();
-  StreamSubscription<ScreencastEvent>? _screencastSubscription;
-
-  CaptureMode _mode = CaptureMode.camera;
-  ScreencastEvent _screencastEvent = ScreencastEvent.idle;
 
   @override
   void initState() {
     super.initState();
     SystemChrome.setPreferredOrientations([DeviceOrientation.portraitUp]);
-    _screencastSubscription = _screencastPlatform.events().listen((event) {
-      if (mounted) setState(() => _screencastEvent = event);
-    });
-    // Picks up a screencast that's still running natively from before this
-    // widget existed (e.g. the app was closed and reopened while
-    // broadcasting) - the event stream alone would otherwise stay silent
-    // until the native side next has something new to report.
-    _screencastPlatform.getStatus().then((event) {
-      if (mounted) setState(() => _screencastEvent = event);
-    });
   }
 
   @override
   void dispose() {
     SystemChrome.setPreferredOrientations(DeviceOrientation.values);
-    _screencastSubscription?.cancel();
     super.dispose();
   }
 
-  void _setMode(CaptureMode mode) {
-    if (mode == _mode) return;
-    // Deliberately leaves _screencastEvent untouched: an in-progress
-    // screencast keeps broadcasting in the background when switching to
-    // Camera mode, so its status shouldn't be reset to idle here.
-    setState(() => _mode = mode);
-  }
-
-  void _onRecordButtonTap() {
-    switch (_screencastEvent.status) {
+  void _onRecordButtonTap(ScreencastEvent screencastEvent) {
+    final platform = ref.read(screencastPlatformProvider);
+    switch (screencastEvent.status) {
       case ScreencastStatus.capturing:
       case ScreencastStatus.paused:
-        _screencastPlatform.stopCapture();
+        platform.stopCapture();
         break;
       case ScreencastStatus.requesting:
       case ScreencastStatus.starting:
         break;
       default:
-        _screencastPlatform.requestCapture();
+        platform.requestCapture();
     }
   }
 
   @override
   Widget build(BuildContext context) {
+    final session = ref.watch(streamSessionProvider);
+    final mode = session.mode;
+    final screencastEvent = session.screencastEvent;
+
     return Scaffold(
       backgroundColor: Colors.black,
       body: Column(
@@ -84,10 +65,10 @@ class _CaptureScreenState extends State<CaptureScreen> {
             child: Stack(
               fit: StackFit.expand,
               children: [
-                if (_mode == CaptureMode.camera)
+                if (mode == CaptureMode.camera)
                   const CameraPreviewPane()
                 else
-                  ScreencastPreviewPane(event: _screencastEvent),
+                  ScreencastPreviewPane(event: screencastEvent),
                 SafeArea(
                   child: Stack(
                     children: [
@@ -105,7 +86,7 @@ class _CaptureScreenState extends State<CaptureScreen> {
                                 borderRadius: BorderRadius.circular(8),
                               ),
                               child: Text(
-                                _statusPillText(),
+                                _statusPillText(mode, screencastEvent),
                                 style: const TextStyle(
                                   color: Colors.white,
                                   fontSize: 13,
@@ -115,9 +96,7 @@ class _CaptureScreenState extends State<CaptureScreen> {
                             ),
                             IconButton(
                               icon: const Icon(Icons.settings, color: Colors.white, size: 28),
-                              onPressed: () {
-                                debugPrint('Open settings');
-                              },
+                              onPressed: () => context.push('/settings'),
                             ),
                           ],
                         ),
@@ -129,9 +108,13 @@ class _CaptureScreenState extends State<CaptureScreen> {
                         child: Column(
                           mainAxisSize: MainAxisSize.min,
                           children: [
-                            CaptureModeToggle(mode: _mode, onChanged: _setMode),
+                            CaptureModeToggle(
+                              mode: mode,
+                              onChanged: (newMode) =>
+                                  ref.read(streamSessionProvider.notifier).setMode(newMode),
+                            ),
                             const SizedBox(height: 16),
-                            Center(child: _buildRecordButton()),
+                            Center(child: _buildRecordButton(mode, screencastEvent)),
                           ],
                         ),
                       ),
@@ -147,11 +130,11 @@ class _CaptureScreenState extends State<CaptureScreen> {
     );
   }
 
-  String _statusPillText() {
-    if (_mode == CaptureMode.camera) {
+  String _statusPillText(CaptureMode mode, ScreencastEvent screencastEvent) {
+    if (mode == CaptureMode.camera) {
       return 'FPS: 60 | 0 kbps';
     }
-    switch (_screencastEvent.status) {
+    switch (screencastEvent.status) {
       case ScreencastStatus.capturing:
         return 'SCREENCAST | LIVE';
       case ScreencastStatus.paused:
@@ -164,21 +147,21 @@ class _CaptureScreenState extends State<CaptureScreen> {
     }
   }
 
-  Widget _buildRecordButton() {
-    if (_mode == CaptureMode.screencast && Platform.isIOS) {
+  Widget _buildRecordButton(CaptureMode mode, ScreencastEvent screencastEvent) {
+    if (mode == CaptureMode.screencast && Platform.isIOS) {
       return const BroadcastPickerButton();
     }
 
-    final isCapturing = _screencastEvent.status == ScreencastStatus.capturing ||
-        _screencastEvent.status == ScreencastStatus.paused;
-    final isBusy = _mode == CaptureMode.screencast &&
-        (_screencastEvent.status == ScreencastStatus.requesting ||
-            _screencastEvent.status == ScreencastStatus.starting);
+    final isCapturing = screencastEvent.status == ScreencastStatus.capturing ||
+        screencastEvent.status == ScreencastStatus.paused;
+    final isBusy = mode == CaptureMode.screencast &&
+        (screencastEvent.status == ScreencastStatus.requesting ||
+            screencastEvent.status == ScreencastStatus.starting);
 
     return GestureDetector(
-      onTap: _mode == CaptureMode.camera
+      onTap: mode == CaptureMode.camera
           ? () => debugPrint('Start stream')
-          : (isBusy ? null : _onRecordButtonTap),
+          : (isBusy ? null : () => _onRecordButtonTap(screencastEvent)),
       child: Container(
         height: 70,
         width: 70,
@@ -193,7 +176,7 @@ class _CaptureScreenState extends State<CaptureScreen> {
                 child: CircularProgressIndicator(color: Colors.white, strokeWidth: 2),
               )
             : Icon(
-                _mode == CaptureMode.screencast && isCapturing ? Icons.stop : Icons.videocam,
+                mode == CaptureMode.screencast && isCapturing ? Icons.stop : Icons.videocam,
                 color: Colors.white,
                 size: 32,
               ),

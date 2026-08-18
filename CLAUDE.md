@@ -46,3 +46,11 @@ iOS forbids in-process system-wide screen capture. It requires a separate **Broa
 - `camera` — camera preview/control.
 - `flutter_lints` — lint rules used by `flutter analyze`.
 - Screencast uses raw platform channels, not a pub package — no maintained plugin combines an app-owned ReplayKit extension + App Group with a Texture-backed Android preview.
+
+## Mistakes log
+
+Whenever Claude Code makes a mistake while working in this repo (wrong assumption, broken command, incorrect edit, etc.), document it in `MISTAKES.md` — what happened, why, and how it was fixed — so future sessions don't repeat it.
+
+## Rules
+
+You must follow the rules in `RULES.md` for every request.

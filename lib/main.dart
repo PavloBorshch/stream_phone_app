@@ -1,10 +1,21 @@
 import 'package:flutter/material.dart';
-import 'core/app_theme.dart';
-import 'features/capture/presentation/capture_screen.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
 
-void main() {
+import 'core/app_theme.dart';
+import 'core/persistence/settings_repository.dart';
+import 'core/persistence/settings_repository_provider.dart';
+import 'core/routing/app_router.dart';
+
+Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
-  runApp(const StreamingApp());
+  final settingsRepository = await SettingsRepository.create();
+
+  runApp(
+    ProviderScope(
+      overrides: [settingsRepositoryProvider.overrideWithValue(settingsRepository)],
+      child: const StreamingApp(),
+    ),
+  );
 }
 
 class StreamingApp extends StatelessWidget {
@@ -12,15 +23,15 @@ class StreamingApp extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return MaterialApp(
+    return MaterialApp.router(
       title: 'PhoneCam Stream',
       debugShowCheckedModeBanner: false,
-      
+
       theme: AppTheme.darkTheme,
       darkTheme: AppTheme.darkTheme,
       themeMode: ThemeMode.dark,
-      
-      home: const CaptureScreen(),
+
+      routerConfig: appRouter,
     );
   }
 }

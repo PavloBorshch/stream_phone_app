@@ -46,3 +46,6 @@ app.*.map.json
 
 # claude related
 .CLAUDE.md
+.MISTAKES.md
+.RULES.md
+.PLAN.md
