@@ -111,6 +111,15 @@ class ScreenCaptureForegroundService : Service() {
 
     val isCapturing: Boolean get() = mediaProjection != null
 
+    /**
+     * The live projection, for `PublisherForegroundService` to hang a second
+     * VirtualDisplay off while streaming screencast frames. Deliberately
+     * read-only: one MediaProjection supports several virtual displays, but
+     * its *ownership* (and therefore when it stops) stays here, so ending a
+     * stream never ends a capture the user started separately.
+     */
+    val currentProjection: MediaProjection? get() = mediaProjection
+
     /** Starts a brand new capture session from a freshly granted consent result. */
     fun startProjection(resultCode: Int, data: Intent, textureRegistry: TextureRegistry) {
         promoteToForeground()

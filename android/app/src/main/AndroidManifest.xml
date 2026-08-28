@@ -4,7 +4,21 @@
 <uses-permission android:name="android.permission.INTERNET"/>
 <uses-permission android:name="android.permission.FOREGROUND_SERVICE"/>
 <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MEDIA_PROJECTION"/>
+<!-- Phase 5 publishing keeps the camera and mic alive in a foreground
+     service (PublisherForegroundService) so a live stream survives the
+     Activity being destroyed; Android 14+ requires a permission per
+     declared foregroundServiceType. -->
+<uses-permission android:name="android.permission.FOREGROUND_SERVICE_CAMERA"/>
+<uses-permission android:name="android.permission.FOREGROUND_SERVICE_MICROPHONE"/>
 <uses-permission android:name="android.permission.POST_NOTIFICATIONS"/>
+<!-- LAN discovery (NsdManager) of PCs advertising _streamphonecam._tcp —
+     see HELP.md. CHANGE_WIFI_MULTICAST_STATE backs LanDiscoveryChannel's
+     WifiManager.MulticastLock, held while browsing (PLAN.md §3.3 notes
+     multicast delivery is unreliable on some OEM Wi-Fi power-saving states
+     without it). -->
+<uses-permission android:name="android.permission.ACCESS_WIFI_STATE"/>
+<uses-permission android:name="android.permission.ACCESS_NETWORK_STATE"/>
+<uses-permission android:name="android.permission.CHANGE_WIFI_MULTICAST_STATE"/>
     <application
         android:label="stream_phone_cam"
         android:name="${applicationName}"
@@ -31,10 +45,50 @@
                 <action android:name="android.intent.action.MAIN"/>
                 <category android:name="android.intent.category.LAUNCHER"/>
             </intent-filter>
+            <!-- Email sign-in link (Firebase Auth) reopens the app here.
+                 autoVerify requires the app's SHA256 cert fingerprint to be
+                 registered in the Firebase console before Android will
+                 actually treat this as a verified App Link — see
+                 AuthRepository's doc comment. -->
+            <intent-filter android:autoVerify="true">
+                <action android:name="android.intent.action.VIEW"/>
+                <category android:name="android.intent.category.DEFAULT"/>
+                <category android:name="android.intent.category.BROWSABLE"/>
+                <data android:scheme="https" android:host="stream-phone-cam.firebaseapp.com" android:pathPrefix="/__/auth/action"/>
+            </intent-filter>
+        </activity>
+        <!-- OAuth redirect capture for flutter_web_auth_2 (Twitch/Kick account
+             linking). Twitch/Kick both reject non-HTTPS redirect URIs, so
+             this uses the https App Link mechanism (like the email sign-in
+             link above) rather than a custom URL scheme — a custom scheme
+             like "streamphonecam://..." fails their app-registration
+             validation. Same autoVerify/SHA-256-fingerprint caveat as the
+             email link's intent-filter above. -->
+        <activity
+            android:name="com.linusu.flutter_web_auth_2.CallbackActivity"
+            android:exported="true">
+            <intent-filter android:autoVerify="true" android:label="flutter_web_auth_2">
+                <action android:name="android.intent.action.VIEW"/>
+                <category android:name="android.intent.category.DEFAULT"/>
+                <category android:name="android.intent.category.BROWSABLE"/>
+                <data android:scheme="https" android:host="stream-phone-cam.firebaseapp.com" android:pathPrefix="/oauth-callback"/>
+            </intent-filter>
         </activity>
         <service
             android:name=".ScreenCaptureForegroundService"
             android:foregroundServiceType="mediaProjection"
+            android:exported="false"
+            android:stopWithTask="false" />
+        <!-- Declares every type this service can run as; which one it actually
+             promotes with is chosen at startForeground() time from what is
+             being captured (camera+mic, or projection+mic for screencast) —
+             Android 14+ rejects a mismatch between the declared type and the
+             capture actually in progress. stopWithTask="false" for the same
+             reason as the screencast service: swiping the app away from
+             Recents must not kill a live broadcast. -->
+        <service
+            android:name=".PublisherForegroundService"
+            android:foregroundServiceType="camera|microphone|mediaProjection"
             android:exported="false"
             android:stopWithTask="false" />
         <!-- Don't delete the meta-data below.

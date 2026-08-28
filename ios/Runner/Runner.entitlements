@@ -10,5 +10,14 @@
 	<array>
 		<string>group.com.example.stream_phone_cam.shared</string>
 	</array>
+	<!-- TODO: Universal Link for the Firebase email sign-in link
+	     (see AuthRepository doc comment). Requires a paid Apple Developer
+	     team so Xcode can add this via Signing & Capabilities -> Associated
+	     Domains (which also writes the apple-app-site-association
+	     requirement) - cannot be completed by hand-editing this file alone. -->
+	<key>com.apple.developer.associated-domains</key>
+	<array>
+		<string>applinks:stream-phone-cam.firebaseapp.com</string>
+	</array>
 </dict>
 </plist>

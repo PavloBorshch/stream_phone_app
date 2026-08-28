@@ -18,6 +18,7 @@
 		97C147011CF9000F007C117D /* LaunchScreen.storyboard in Resources */ = {isa = PBXBuildFile; fileRef = 97C146FF1CF9000F007C117D /* LaunchScreen.storyboard */; };
 		1C4FB47E5EB599F6B9AF311F /* ScreencastChannel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 905E99D4A645A620D4346EEE /* ScreencastChannel.swift */; };
 		4CC940F9A9440B3DE005910F /* BroadcastPickerViewFactory.swift in Sources */ = {isa = PBXBuildFile; fileRef = 62377232EBB2B138EAE3F2F9 /* BroadcastPickerViewFactory.swift */; };
+		880E7B9909319557737690EE /* LanDiscoveryChannel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 55872AA10FA5EB894200D8A5 /* LanDiscoveryChannel.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -63,6 +64,7 @@
 		97C147021CF9000F007C117D /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Info.plist; sourceTree = "<group>"; };
 		905E99D4A645A620D4346EEE /* ScreencastChannel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ScreencastChannel.swift; sourceTree = "<group>"; };
 		62377232EBB2B138EAE3F2F9 /* BroadcastPickerViewFactory.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BroadcastPickerViewFactory.swift; sourceTree = "<group>"; };
+		55872AA10FA5EB894200D8A5 /* LanDiscoveryChannel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LanDiscoveryChannel.swift; sourceTree = "<group>"; };
 		741540521619AD4DAFD14F72 /* Runner.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = Runner.entitlements; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
@@ -131,6 +133,7 @@
 				74858FAD1ED2DC5600515810 /* Runner-Bridging-Header.h */,
 				905E99D4A645A620D4346EEE /* ScreencastChannel.swift */,
 				62377232EBB2B138EAE3F2F9 /* BroadcastPickerViewFactory.swift */,
+				55872AA10FA5EB894200D8A5 /* LanDiscoveryChannel.swift */,
 				741540521619AD4DAFD14F72 /* Runner.entitlements */,
 			);
 			path = Runner;
@@ -294,6 +297,7 @@
 				7884E8682EC3CC0700C636F2 /* SceneDelegate.swift in Sources */,
 				1C4FB47E5EB599F6B9AF311F /* ScreencastChannel.swift in Sources */,
 				4CC940F9A9440B3DE005910F /* BroadcastPickerViewFactory.swift in Sources */,
+				880E7B9909319557737690EE /* LanDiscoveryChannel.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};

@@ -1,103 +1,113 @@
-import 'package:camera/camera.dart';
-import 'package:flutter/material.dart';
+import 'dart:async';
 
-class CameraPreviewPane extends StatefulWidget {
+import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
+
+import '../../video_settings/presentation/video_settings_provider.dart';
+import '../data/camera_capture_platform.dart';
+import '../domain/camera_capture_status.dart';
+
+final cameraCapturePlatformProvider = Provider<CameraCapturePlatform>(
+  (ref) => CameraCapturePlatform(),
+);
+
+/// Renders the native capture session's preview texture.
+///
+/// The session itself is owned natively (`PublisherForegroundService`), not by
+/// this widget: unmounting the pane — switching to Screencast mode, or the
+/// Activity being recreated — must not interrupt a live stream, so this only
+/// asks for the camera to stop, and the native side refuses while publishing.
+/// That is the same ownership split the screencast pane already relies on.
+class CameraPreviewPane extends ConsumerStatefulWidget {
   const CameraPreviewPane({super.key});
 
   @override
-  State<CameraPreviewPane> createState() => _CameraPreviewPaneState();
+  ConsumerState<CameraPreviewPane> createState() => _CameraPreviewPaneState();
 }
 
-class _CameraPreviewPaneState extends State<CameraPreviewPane> {
-  CameraController? _controller;
-  List<CameraDescription> _cameras = [];
-  int _selectedCameraIndex = 0;
-  bool _isReady = false;
-  bool _isSwitchingCamera = false;
+class _CameraPreviewPaneState extends ConsumerState<CameraPreviewPane> {
+  CameraCaptureEvent _event = CameraCaptureEvent.idle;
+  StreamSubscription<CameraCaptureEvent>? _subscription;
+  bool _isBusy = true;
+  String? _error;
+
+  /// Held rather than re-read on demand because `dispose()` needs it, and
+  /// `ref` may not be used once the widget is being torn down.
+  late final CameraCapturePlatform _platform = ref.read(cameraCapturePlatformProvider);
 
   @override
   void initState() {
     super.initState();
-    _setupCamera();
-  }
-
-  Future<void> _setupCamera() async {
-    try {
-      _cameras = await availableCameras();
-
-      if (_cameras.isEmpty) {
-        return;
-      }
-
-      _selectedCameraIndex = _cameras.indexWhere(
-        (camera) => camera.lensDirection == CameraLensDirection.back,
-      );
-      if (_selectedCameraIndex == -1) {
-        _selectedCameraIndex = 0;
-      }
-
-      await _initializeCamera(_selectedCameraIndex);
-    } catch (e) {
-      debugPrint('Camera initialization error: $e');
-    }
-  }
-
-  Future<void> _initializeCamera(int index) async {
-    final controller = CameraController(
-      _cameras[index],
-      ResolutionPreset.high,
-      enableAudio: true,
+    _subscription = _platform.events().listen(
+      (event) {
+        if (mounted) setState(() => _event = event);
+      },
+      onError: (Object error) => debugPrint('camera event stream error: $error'),
     );
+    unawaited(_start());
+  }
 
+  Future<void> _start() async {
+    // The preview runs at the configured capture resolution so what the user
+    // frames is what the encoder sends — a preview at a different aspect
+    // ratio would crop differently from the stream.
+    final settings = ref.read(videoSettingsProvider);
     try {
-      await controller.initialize();
-    } catch (e) {
-      await controller.dispose();
-      rethrow;
-    }
+      // Covers the case where capture is already running (a stream in
+      // progress from before this pane existed): the native side re-attaches
+      // rather than reopening the camera.
+      final status = await _platform.getStatus();
+      if (mounted) setState(() => _event = status);
 
-    if (!mounted) {
-      await controller.dispose();
-      return;
+      await _platform.startPreview(
+        width: settings.resolution.width,
+        height: settings.resolution.height,
+      );
+      if (mounted) setState(() => _isBusy = false);
+    } on PlatformException catch (error) {
+      if (mounted) {
+        setState(() {
+          _isBusy = false;
+          _error = error.message ?? 'Could not open the camera.';
+        });
+      }
+    } on MissingPluginException {
+      if (mounted) {
+        setState(() {
+          _isBusy = false;
+          _error = 'Camera capture is not available on this build yet.';
+        });
+      }
     }
-
-    setState(() {
-      _controller = controller;
-      _isReady = true;
-      _isSwitchingCamera = false;
-    });
   }
 
   Future<void> _switchCamera() async {
-    if (_cameras.length < 2 || _isSwitchingCamera) {
-      return;
-    }
-
-    final previousController = _controller;
-    final nextIndex = (_selectedCameraIndex + 1) % _cameras.length;
-
-    setState(() {
-      _isSwitchingCamera = true;
-      _isReady = false;
-      _controller = null;
-      _selectedCameraIndex = nextIndex;
-    });
-
-    await previousController?.dispose();
-
+    if (_isBusy || !_event.hasMultipleCameras) return;
+    setState(() => _isBusy = true);
+    final settings = ref.read(videoSettingsProvider);
     try {
-      await _initializeCamera(nextIndex);
-    } catch (e) {
-      debugPrint('Camera switch error: $e');
-      if (mounted) {
-        setState(() => _isSwitchingCamera = false);
-      }
+      await _platform.switchCamera(
+        width: settings.resolution.width,
+        height: settings.resolution.height,
+      );
+    } on PlatformException catch (error) {
+      debugPrint('Camera switch error: $error');
+    } finally {
+      if (mounted) setState(() => _isBusy = false);
     }
   }
 
   @override
   void dispose() {
-    _controller?.dispose();
+    _subscription?.cancel();
+    // Fire-and-forget: the pane is going away either way, and the native side
+    // ignores this while a stream is live.
+    unawaited(
+      _platform
+          .stopPreview()
+          .catchError((Object error) => debugPrint('stopPreview failed: $error')),
+    );
     super.dispose();
   }
 
@@ -106,16 +116,21 @@ class _CameraPreviewPaneState extends State<CameraPreviewPane> {
     return Stack(
       fit: StackFit.expand,
       children: [
-        if (_isReady && _controller != null && _controller!.value.isInitialized)
-          CameraPreview(
-            _controller!,
-            key: ValueKey(_selectedCameraIndex),
-          ),
-        if (!_isReady || _isSwitchingCamera)
-          const ColoredBox(
+        if (_event.isPreviewReady) _PreviewTexture(event: _event),
+        if (!_event.isPreviewReady)
+          ColoredBox(
             color: Colors.black,
             child: Center(
-              child: CircularProgressIndicator(color: Colors.redAccent),
+              child: _error != null
+                  ? Padding(
+                      padding: const EdgeInsets.symmetric(horizontal: 32),
+                      child: Text(
+                        _error!,
+                        textAlign: TextAlign.center,
+                        style: const TextStyle(color: Colors.white70, fontSize: 15),
+                      ),
+                    )
+                  : const CircularProgressIndicator(color: Colors.redAccent),
             ),
           ),
         SafeArea(
@@ -125,7 +140,7 @@ class _CameraPreviewPaneState extends State<CameraPreviewPane> {
                 right: 16,
                 bottom: 16,
                 child: IconButton(
-                  onPressed: _cameras.length < 2 || _isSwitchingCamera ? null : _switchCamera,
+                  onPressed: _event.hasMultipleCameras && !_isBusy ? _switchCamera : null,
                   icon: const Icon(Icons.cameraswitch, color: Colors.white, size: 32),
                   style: IconButton.styleFrom(
                     backgroundColor: Colors.black54,
@@ -137,6 +152,40 @@ class _CameraPreviewPaneState extends State<CameraPreviewPane> {
           ),
         ),
       ],
+    );
+  }
+}
+
+/// The raw `Texture` widget has no notion of aspect ratio — laid out
+/// directly inside the pane's `Stack(fit: StackFit.expand)`, it stretched
+/// non-uniformly to fill the phone's (tall) screen bounds, squeezing a
+/// capture buffer at a different aspect ratio (e.g. 16:9) horizontally.
+/// Wrapping it in a fixed-size `SizedBox` at the native buffer's own
+/// width/height, scaled with `BoxFit.cover` via `FittedBox`, preserves the
+/// buffer's real aspect ratio and crops to fill instead of distorting —
+/// matching what the record button actually captures.
+class _PreviewTexture extends StatelessWidget {
+  const _PreviewTexture({required this.event});
+
+  final CameraCaptureEvent event;
+
+  @override
+  Widget build(BuildContext context) {
+    final width = event.width;
+    final height = event.height;
+    if (width == null || height == null || width <= 0 || height <= 0) {
+      // No native size reported (shouldn't happen alongside a textureId,
+      // but native contracts change) — fall back to the old stretch-to-fill
+      // rather than crashing on a division by zero in FittedBox.
+      return Texture(textureId: event.textureId!);
+    }
+    return FittedBox(
+      fit: BoxFit.cover,
+      child: SizedBox(
+        width: width.toDouble(),
+        height: height.toDouble(),
+        child: Texture(textureId: event.textureId!),
+      ),
     );
   }
 }

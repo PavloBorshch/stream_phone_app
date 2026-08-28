@@ -45,7 +45,13 @@ app.*.map.json
 /android/app/release
 
 # claude related
-.CLAUDE.md
-.MISTAKES.md
-.RULES.md
-.PLAN.md
+/CLAUDE.md
+/MISTAKES.md
+/RULES.md
+/PLAN.md
+/HELP.md
+
+# Firebase
+firebase-debug.log
+firebase-debug.*.log
+.firebase/

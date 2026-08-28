@@ -4,6 +4,7 @@ import 'package:flutter/material.dart';
 /// with real functionality today (Phase 2); the rest are built out in
 /// later plan phases and currently route to a placeholder.
 enum SettingsSectionId {
+  account,
   language,
   destinations,
   pcConnection,
@@ -34,6 +35,13 @@ class SettingsSection {
 }
 
 const settingsSections = [
+  SettingsSection(
+    id: SettingsSectionId.account,
+    title: 'Account',
+    subtitle: 'Sign in with email',
+    icon: Icons.person,
+    pathSegment: 'account',
+  ),
   SettingsSection(
     id: SettingsSectionId.language,
     title: 'Language',

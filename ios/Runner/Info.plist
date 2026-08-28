@@ -65,5 +65,35 @@
 	<string>The app needs access to the camera for video streaming.</string>
 	<key>NSMicrophoneUsageDescription</key>
 	<string>The app needs access to the microphone for recording audio.</string>
+	<!-- LAN discovery (LanDiscoveryChannel.swift, Bonjour) of PCs advertising
+	     _streamphonecam._tcp — see HELP.md. iOS 14+ shows a one-time
+	     permission prompt the user may decline; manual host/PIN entry
+	     (PinEntryPage) is the mandatory fallback, not optional. -->
+	<key>NSLocalNetworkUsageDescription</key>
+	<string>Used to discover your paired PC on the local network for streaming.</string>
+	<key>NSBonjourServices</key>
+	<array>
+		<string>_streamphonecam._tcp</string>
+	</array>
+	<!-- Twitch/Kick OAuth redirects (flutter_web_auth_2) use the https App
+	     Link flow via ASWebAuthenticationSession, not a custom URL scheme —
+	     Twitch/Kick both reject non-HTTPS redirect URIs. That flow is
+	     handled by the `com.apple.developer.associated-domains` entitlement
+	     in Runner.entitlements (applinks:stream-phone-cam.firebaseapp.com),
+	     not by anything here. -->
+	<key>CFBundleURLTypes</key>
+	<array>
+		<dict>
+			<key>CFBundleTypeRole</key>
+			<string>Editor</string>
+			<key>CFBundleURLSchemes</key>
+			<array>
+				<!-- REVERSED_CLIENT_ID from GoogleService-Info.plist — required
+				     by google_sign_in's iOS implementation to receive the
+				     OAuth redirect back into the app. -->
+				<string>com.googleusercontent.apps.421464515774-hio994d1r89p2he2vtm90l28c5j88ed6</string>
+			</array>
+		</dict>
+	</array>
 </dict>
 </plist>

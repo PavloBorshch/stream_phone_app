@@ -11,6 +11,7 @@ import UIKit
   }
 
   private let screencastChannel = ScreencastChannel()
+  private let lanDiscoveryChannel = LanDiscoveryChannel()
 
   func didInitializeImplicitFlutterEngine(_ engineBridge: FlutterImplicitEngineBridge) {
     GeneratedPluginRegistrant.register(with: engineBridge.pluginRegistry)
@@ -18,5 +19,8 @@ import UIKit
     let registrar = engineBridge.pluginRegistry.registrar(forPlugin: "ScreencastPlugin")
     screencastChannel.register(messenger: registrar.messenger())
     registrar.register(BroadcastPickerViewFactory(), withId: "com.streamphonecam/broadcast_picker_view")
+
+    let lanDiscoveryRegistrar = engineBridge.pluginRegistry.registrar(forPlugin: "LanDiscoveryPlugin")
+    lanDiscoveryChannel.register(messenger: lanDiscoveryRegistrar.messenger())
   }
 }

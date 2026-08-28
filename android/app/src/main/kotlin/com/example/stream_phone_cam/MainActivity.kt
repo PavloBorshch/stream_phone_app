@@ -1,16 +1,13 @@
 package com.example.stream_phone_cam
 
-import android.Manifest
 import android.app.Activity
 import android.content.ComponentName
 import android.content.Context
 import android.content.Intent
 import android.content.ServiceConnection
-import android.content.pm.PackageManager
 import android.media.projection.MediaProjectionManager
 import android.os.Build
 import android.os.IBinder
-import androidx.core.app.ActivityCompat
 import androidx.core.content.ContextCompat
 import io.flutter.embedding.android.FlutterActivity
 import io.flutter.embedding.engine.FlutterEngine
@@ -22,11 +19,34 @@ class MainActivity : FlutterActivity() {
     private val methodChannelName = "com.streamphonecam/screencast"
     private val eventChannelName = "com.streamphonecam/screencast_events"
     private val captureRequestCode = 4201
-    private val notificationPermissionRequestCode = 4202
 
     private var textureRegistry: TextureRegistry? = null
     private var service: ScreenCaptureForegroundService? = null
+    private var publisherService: PublisherForegroundService? = null
     private var eventSink: EventChannel.EventSink? = null
+
+    // Phase 5's publisher/camera channels. Constructed lazily for the same
+    // reason as lanDiscoveryChannel below.
+    private var publisherChannel: PublisherChannel? = null
+
+    private val publisherConnection = object : ServiceConnection {
+        override fun onServiceConnected(name: ComponentName?, binder: IBinder?) {
+            val bound = (binder as PublisherForegroundService.LocalBinder).service
+            publisherService = bound
+            publisherChannel?.onServiceConnected(bound)
+        }
+
+        override fun onServiceDisconnected(name: ComponentName?) {
+            publisherService = null
+        }
+    }
+
+    // Constructed lazily in configureFlutterEngine (not as an eager field
+    // initializer) because it calls getSystemService(), which needs the
+    // Activity's base Context already attached - not yet true during the
+    // Activity's own construction.
+    private var lanDiscoveryChannel: LanDiscoveryChannel? = null
+    private var deviceHealthPlugin: DeviceHealthPlugin? = null
 
     /**
      * A capture grant that arrived before [connection] finished binding
@@ -69,7 +89,7 @@ class MainActivity : FlutterActivity() {
             .setMethodCallHandler { call, result ->
                 when (call.method) {
                     "requestCapture" -> {
-                        requestNotificationPermissionIfNeeded()
+                        NotificationPermission.requestIfNeeded(this)
                         launchCaptureIntent()
                         result.success(null)
                     }
@@ -103,6 +123,29 @@ class MainActivity : FlutterActivity() {
             connection,
             Context.BIND_AUTO_CREATE,
         )
+
+        val discoveryChannel = lanDiscoveryChannel ?: LanDiscoveryChannel(this).also { lanDiscoveryChannel = it }
+        discoveryChannel.register(flutterEngine.dartExecutor.binaryMessenger)
+
+        val publisher = publisherChannel ?: PublisherChannel(
+            this,
+            serviceProvider = { publisherService },
+            // Screencast publishing borrows the projection the screencast
+            // service already owns rather than asking the user to consent a
+            // second time.
+            projectionProvider = { service?.currentProjection },
+        ).also { publisherChannel = it }
+        publisher.register(flutterEngine.dartExecutor.binaryMessenger, flutterEngine.renderer)
+        publisherService?.let { publisher.onServiceConnected(it) }
+
+        bindService(
+            Intent(this, PublisherForegroundService::class.java),
+            publisherConnection,
+            Context.BIND_AUTO_CREATE,
+        )
+
+        val deviceHealth = deviceHealthPlugin ?: DeviceHealthPlugin(this).also { deviceHealthPlugin = it }
+        deviceHealth.register(flutterEngine.dartExecutor.binaryMessenger)
     }
 
     private fun launchCaptureIntent() {
@@ -135,21 +178,8 @@ class MainActivity : FlutterActivity() {
 
     override fun onDestroy() {
         unbindService(connection)
+        unbindService(publisherConnection)
         super.onDestroy()
     }
 
-    private fun requestNotificationPermissionIfNeeded() {
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
-            ContextCompat.checkSelfPermission(
-                this,
-                Manifest.permission.POST_NOTIFICATIONS,
-            ) != PackageManager.PERMISSION_GRANTED
-        ) {
-            ActivityCompat.requestPermissions(
-                this,
-                arrayOf(Manifest.permission.POST_NOTIFICATIONS),
-                notificationPermissionRequestCode,
-            )
-        }
-    }
 }

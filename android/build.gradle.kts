@@ -2,6 +2,9 @@ allprojects {
     repositories {
         google()
         mavenCentral()
+        // HaishinKit.kt (the native RTMP publisher, PLAN.md §1.5/§3.2) is
+        // published through JitPack, not Maven Central.
+        maven { url = uri("https://jitpack.io") }
     }
 }
 

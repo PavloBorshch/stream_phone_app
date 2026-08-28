@@ -1,0 +1,54 @@
+{
+  "project_info": {
+    "project_number": "421464515774",
+    "project_id": "stream-phone-cam",
+    "storage_bucket": "stream-phone-cam.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:421464515774:android:5ec021e3415c1450712aef",
+        "android_client_info": {
+          "package_name": "com.example.stream_phone_cam"
+        }
+      },
+      "oauth_client": [
+        {
+          "client_id": "421464515774-qfkavf3node5cufk4tu7tpr47k74fi84.apps.googleusercontent.com",
+          "client_type": 1,
+          "android_info": {
+            "package_name": "com.example.stream_phone_cam",
+            "certificate_hash": "48f2034bada5f8b5a95b9a8e091d87449a72be83"
+          }
+        },
+        {
+          "client_id": "421464515774-sqc5bkfjg4hib6mtsbstl8hotkjeedcc.apps.googleusercontent.com",
+          "client_type": 3
+        }
+      ],
+      "api_key": [
+        {
+          "current_key": "AIzaSyDHJ-BYmdtfe6nwAjVxdKWDYO_u2EXfHyY"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": [
+            {
+              "client_id": "421464515774-sqc5bkfjg4hib6mtsbstl8hotkjeedcc.apps.googleusercontent.com",
+              "client_type": 3
+            },
+            {
+              "client_id": "421464515774-hio994d1r89p2he2vtm90l28c5j88ed6.apps.googleusercontent.com",
+              "client_type": 2,
+              "ios_info": {
+                "bundle_id": "com.example.streamPhoneCam"
+              }
+            }
+          ]
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}
