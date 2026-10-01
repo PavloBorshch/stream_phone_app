@@ -1630,6 +1630,15 @@ public class MethodCallHandlerImpl implements MethodCallHandler, StateProvider {
   }
 
   /**
+   * The `streamId` every Leg A track (video and audio) is added under — see
+   * PATCH_NOTES.md's "Why a real stream id" note. Both tracks share this one
+   * id so a receiver that groups remote tracks by stream sees them as
+   * belonging to the same source, the same as a `getUserMedia` `MediaStream`
+   * would produce.
+   */
+  private static final String EXTERNAL_TRACK_STREAM_ID = "phoneCamLegA";
+
+  /**
    * StreamPhoneCam local patch (see FlutterWebRTCPlugin.attachExternalTrack
    * and PATCH_NOTES.md): adds a MediaStreamTrack that was created directly
    * against getPeerConnectionFactory() -- not through getUserMedia -- to an
@@ -1649,7 +1658,13 @@ public class MethodCallHandlerImpl implements MethodCallHandler, StateProvider {
     synchronized (localTracks) {
       localTracks.put(track.id(), localTrack);
     }
-    return peerConnection.addTrack(track, new ArrayList<>()) != null;
+    // A non-empty streamId is required: addTrack(track, []) produces an SDP
+    // `msid:- <trackId>` (no stream at all), which breaks any receiver that
+    // resolves a remote track through a stream-keyed lookup rather than a
+    // pure per-track one. See PATCH_NOTES.md.
+    List<String> streamIds = new ArrayList<>();
+    streamIds.add(EXTERNAL_TRACK_STREAM_ID);
+    return peerConnection.addTrack(track, streamIds) != null;
   }
 
   /** Reverses {@link #attachExternalTrack}; see its doc comment. */

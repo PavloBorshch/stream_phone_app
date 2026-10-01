@@ -1,0 +1,17 @@
+{
+  "agy-autoaccept": {
+    "enabled": true,
+    "PreToolUse": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node .agents/hooks/autoaccept-gate.js",
+            "timeout": 10
+          }
+        ]
+      }
+    ]
+  }
+}

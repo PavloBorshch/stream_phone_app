@@ -27,3 +27,12 @@ plugins {
 }
 
 include(":app")
+
+// HaishinKit.kt is vendored under third_party/HaishinKit.kt (see its
+// PATCH_NOTES.md) rather than fetched from JitPack — see app/build.gradle.kts
+// for why. These two modules mirror upstream's own :haishinkit/:rtmp Gradle
+// modules, just relocated to live inside this repo.
+include(":haishinkit")
+project(":haishinkit").projectDir = file("../third_party/HaishinKit.kt/haishinkit")
+include(":rtmp")
+project(":rtmp").projectDir = file("../third_party/HaishinKit.kt/rtmp")

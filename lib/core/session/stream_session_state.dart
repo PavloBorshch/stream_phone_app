@@ -1,3 +1,4 @@
+import '../../features/capture/domain/broadcast_target.dart';
 import '../../features/capture/domain/capture_mode.dart';
 import '../../features/pc_connection/domain/pc_connection_status.dart';
 import '../../features/screencast/domain/screencast_status.dart';
@@ -5,11 +6,13 @@ import '../../features/streaming_engine/domain/publisher_event.dart';
 
 /// The cross-cutting session state shared by the capture screen and the
 /// settings screen: which capture source is selected, its live status, the
-/// status of the (optional, Phase 4+) connection to a paired PC, and the
-/// state of the publishing session feeding the configured destinations.
+/// status of the (optional, Phase 4+) connection to a paired PC, where the
+/// feed should go once publishing starts, and the state of the publishing
+/// session itself.
 class StreamSessionState {
   const StreamSessionState({
     required this.mode,
+    required this.broadcastTarget,
     required this.screencastEvent,
     required this.pcConnectionEvent,
     required this.publisherEvent,
@@ -19,6 +22,13 @@ class StreamSessionState {
   });
 
   final CaptureMode mode;
+
+  /// The user's choice of where to send the composited feed: the paired PC,
+  /// the configured destinations, or both — see `BroadcastTarget`'s doc
+  /// comment. Persisted (`BroadcastTargetRepository`) so it survives a
+  /// restart; kept here too so `_startPublishing` and the capture screen's
+  /// selector both read the one live value.
+  final BroadcastTarget broadcastTarget;
   final ScreencastEvent screencastEvent;
   final PcConnectionEvent pcConnectionEvent;
   final PublisherEvent publisherEvent;
@@ -44,6 +54,7 @@ class StreamSessionState {
 
   static const initial = StreamSessionState(
     mode: CaptureMode.camera,
+    broadcastTarget: BroadcastTarget.toServices,
     screencastEvent: ScreencastEvent.idle,
     pcConnectionEvent: PcConnectionEvent.idle,
     publisherEvent: PublisherEvent.idle,
@@ -56,6 +67,7 @@ class StreamSessionState {
 
   StreamSessionState copyWith({
     CaptureMode? mode,
+    BroadcastTarget? broadcastTarget,
     ScreencastEvent? screencastEvent,
     PcConnectionEvent? pcConnectionEvent,
     PublisherEvent? publisherEvent,
@@ -66,6 +78,7 @@ class StreamSessionState {
   }) {
     return StreamSessionState(
       mode: mode ?? this.mode,
+      broadcastTarget: broadcastTarget ?? this.broadcastTarget,
       screencastEvent: screencastEvent ?? this.screencastEvent,
       pcConnectionEvent: pcConnectionEvent ?? this.pcConnectionEvent,
       publisherEvent: publisherEvent ?? this.publisherEvent,

@@ -8,6 +8,7 @@ import 'core/app_theme.dart';
 import 'core/persistence/settings_repository.dart';
 import 'core/persistence/settings_repository_provider.dart';
 import 'core/routing/app_router.dart';
+import 'features/pc_connection/presentation/usb_auto_connect.dart';
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
@@ -25,11 +26,17 @@ Future<void> main() async {
   );
 }
 
-class StreamingApp extends StatelessWidget {
+class StreamingApp extends ConsumerWidget {
   const StreamingApp({super.key});
 
   @override
-  Widget build(BuildContext context) {
+  Widget build(BuildContext context, WidgetRef ref) {
+    // Started here, for the whole life of the app: a USB cable can be
+    // plugged in at any point and the phone should connect to the PC on the
+    // other end without being asked. See UsbAutoConnect for why it lives at
+    // the root rather than in a screen or in StreamSessionNotifier.
+    ref.watch(usbAutoConnectProvider);
+
     return MaterialApp.router(
       title: 'PhoneCam Stream',
       debugShowCheckedModeBanner: false,

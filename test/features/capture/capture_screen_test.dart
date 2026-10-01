@@ -5,6 +5,9 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:mocktail/mocktail.dart';
 import 'package:shared_preferences/shared_preferences.dart';
+import 'package:stream_phone_cam/features/pc_connection/data/usb_bridge_discovery.dart';
+import 'package:stream_phone_cam/features/pc_connection/domain/discovered_pc.dart';
+import 'package:stream_phone_cam/features/pc_connection/presentation/usb_discovery_provider.dart';
 import 'package:stream_phone_cam/core/persistence/secure_token_store.dart';
 import 'package:stream_phone_cam/core/persistence/secure_token_store_provider.dart';
 import 'package:stream_phone_cam/core/persistence/settings_repository.dart';
@@ -16,6 +19,7 @@ import 'package:stream_phone_cam/features/camera/presentation/camera_preview_pan
 import 'package:stream_phone_cam/features/battery_performance/data/battery_service.dart';
 import 'package:stream_phone_cam/features/battery_performance/domain/device_health.dart';
 import 'package:stream_phone_cam/features/battery_performance/presentation/battery_performance_provider.dart';
+import 'package:stream_phone_cam/features/capture/domain/broadcast_target.dart';
 import 'package:stream_phone_cam/features/capture/domain/capture_mode.dart';
 import 'package:stream_phone_cam/features/capture/presentation/capture_screen.dart';
 import 'package:stream_phone_cam/features/destinations/data/destinations_repository.dart';
@@ -40,6 +44,14 @@ class MockCameraCapturePlatform extends Mock implements CameraCapturePlatform {}
 class MockSecureTokenStore extends Mock implements SecureTokenStore {}
 
 class _FakePublishRequest extends Fake implements PublishRequest {}
+
+/// A USB tunnel that is never up, so these tests never touch the network.
+class _NoUsbPc implements UsbBridgeDiscovery {
+  const _NoUsbPc();
+
+  @override
+  Future<DiscoveredPc?> find({Duration timeout = const Duration(seconds: 1)}) async => null;
+}
 
 void main() {
   late MockScreencastPlatform screencast;
@@ -120,6 +132,11 @@ void main() {
         publisherPlatformProvider.overrideWithValue(publisher),
         cameraCapturePlatformProvider.overrideWithValue(camera),
         settingsRepositoryProvider.overrideWithValue(settings),
+        // Without this, anything that reaches the "why is no PC connected"
+        // path makes a real request to 127.0.0.1:58712 -- which is slow at
+        // best, and at worst finds a PC client actually running on the
+        // developer's machine and changes what the test asserts.
+        usbBridgeDiscoveryProvider.overrideWithValue(const _NoUsbPc()),
         secureTokenStoreProvider.overrideWithValue(secureStore),
         activeNetworkProvider.overrideWith((ref) => Stream.value(activeNetwork)),
         // Battery and thermal reach for platform channels the moment they are
@@ -370,6 +387,50 @@ void main() {
     expect(find.textContaining('85%'), findsOneWidget);
   });
 
+  group('broadcast target selector', () {
+    testWidgets('is shown next to the mode toggle and defaults to To services', (tester) async {
+      await pumpCaptureScreen(tester);
+
+      expect(find.text('To PC'), findsOneWidget);
+      expect(find.text('To services'), findsOneWidget);
+      expect(find.text('Both'), findsOneWidget);
+    });
+
+    testWidgets('tapping To PC with nothing connected blocks the start with a clear message',
+        (tester) async {
+      await pumpCaptureScreen(tester);
+
+      await tester.tap(find.text('To PC'));
+      await tester.pump();
+      await tester.tap(find.byIcon(Icons.videocam));
+      await tester.pump();
+
+      verifyNever(() => publisher.start(any()));
+      // Nothing is paired in this harness, which is a different problem
+      // from a paired PC being offline -- and needs a different action, so
+      // the message names that one specifically.
+      expect(find.textContaining('No PC is paired yet'), findsOneWidget);
+    });
+
+    testWidgets('is disabled once a stream goes live', (tester) async {
+      await addDestination();
+      final container = await pumpCaptureScreen(tester);
+
+      await tester.tap(find.byIcon(Icons.videocam));
+      await tester.pump();
+      publisherEvents.add(const PublisherEvent(status: PublisherStatus.live));
+      await tester.pump();
+
+      await tester.tap(find.text('Both'));
+      await tester.pump();
+
+      // The tap is swallowed while streaming — the native session was
+      // configured with the selection at the moment `start()` was called and
+      // has no way to retarget mid-stream.
+      expect(container.read(streamSessionProvider).broadcastTarget, BroadcastTarget.toServices);
+    });
+  });
+
   group('overlays', () {
     testWidgets('the mute button toggles the mic without stopping the stream', (tester) async {
       final container = await pumpCaptureScreen(tester);
@@ -433,6 +494,47 @@ void main() {
       expect(find.text('3800 kbps of 4500'), findsOneWidget);
       expect(find.text('01:05'), findsOneWidget);
       expect(find.text('5.0 MB'), findsOneWidget);
+    });
+
+    testWidgets(
+        'a live PC-only session (empty destinations) reads sensibly rather than blank/nonsense',
+        (tester) async {
+      await pumpCaptureScreen(tester);
+
+      // What PublisherForegroundService.currentStatusMap() actually reports
+      // for a PC-only session: real measured bitrate/bytes/uptime off
+      // TrafficStats, but no fps/per-leg target (nothing HaishinKit tracks
+      // for the WebRTC leg) and an empty `destinations` list (no RTMP legs
+      // at all).
+      publisherEvents.add(
+        const PublisherEvent(
+          status: PublisherStatus.live,
+          bitrateKbps: 2200,
+          bytesSent: 512 * 1024,
+          uptimeSeconds: 12,
+          destinations: [],
+        ),
+      );
+      await tester.pump();
+
+      // Headline falls back to "Stats" rather than a misleading "0/0 live".
+      expect(find.text('Stats'), findsOneWidget);
+
+      await tester.tap(find.byIcon(Icons.insights));
+      await tester.pump();
+
+      // Real numbers show...
+      expect(find.text('00:12'), findsOneWidget);
+      expect(find.text('512 KB'), findsOneWidget);
+      // ...bitrate shows with no "of <null>" suffix since there is no
+      // per-leg target to pair it with...
+      expect(find.text('2200 kbps'), findsOneWidget);
+      // ...and the one field Leg A doesn't produce (frame rate — nothing
+      // tracks fps for the WebRTC leg) shows a single placeholder, not
+      // "null" or a crash.
+      expect(find.text('—'), findsOneWidget);
+      // No per-destination breakdown rows for an empty leg list.
+      expect(find.text('0'), findsOneWidget); // "Dropped" defaults to 0, not blank.
     });
   });
 }

@@ -1,0 +1,26 @@
+{
+  "enabled": true,
+  "types": {
+    "consoleCommands": true,
+    "scriptExecution": true,
+    "webViews": true,
+    "fileEdits": true
+  },
+  "denylist": [
+    "rm\\s+-rf",
+    "del\\s+.*\\/s",
+    "rmdir\\s+.*\\/s",
+    "format\\s+[a-zA-Z]:",
+    "mkfs\\.",
+    "dd\\s+if=",
+    "git\\s+push\\s+.*--force",
+    "git\\s+reset\\s+--hard",
+    "drop\\s+database",
+    "drop\\s+table",
+    "shutdown\\b"
+  ],
+  "allowlist": [],
+  "pollIntervalMs": 800,
+  "enableUIAutomation": true,
+  "enableHooksSync": true
+}

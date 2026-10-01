@@ -186,6 +186,9 @@ class PcSignalingClient {
       'auth': switch (_candidate.authMethod) {
         PairingAuthMethod.token => {'method': 'token', 'pcId': _candidate.pcId, 'token': _candidate.token},
         PairingAuthMethod.pin => {'method': 'pin', 'pin': _candidate.pin},
+        // No secret: reaching the PC through its own USB tunnel is the
+        // credential. See PairingAuthMethod.usb.
+        PairingAuthMethod.usb => {'method': 'usb'},
       },
     });
   }

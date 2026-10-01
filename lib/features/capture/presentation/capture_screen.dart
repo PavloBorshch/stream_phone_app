@@ -18,6 +18,7 @@ import '../../overlays/presentation/stream_stats_overlay.dart';
 import '../../screencast/presentation/widgets/broadcast_picker_button.dart';
 import '../../streaming_engine/domain/publisher_event.dart';
 import '../domain/capture_mode.dart';
+import 'widgets/broadcast_target_selector.dart';
 import 'widgets/capture_mode_toggle.dart';
 
 class CaptureScreen extends ConsumerStatefulWidget {
@@ -204,6 +205,14 @@ class _CaptureScreenState extends ConsumerState<CaptureScreen> {
                             CaptureModeToggle(
                               mode: mode,
                               onChanged: (newMode) => _onModeChanged(session, newMode),
+                            ),
+                            const SizedBox(height: 8),
+                            BroadcastTargetSelector(
+                              target: session.broadcastTarget,
+                              enabled: !session.isStreaming,
+                              onChanged: (target) => ref
+                                  .read(streamSessionProvider.notifier)
+                                  .setBroadcastTarget(target),
                             ),
                             const SizedBox(height: 16),
                             // A three-slot row rather than a Stack: a Stack

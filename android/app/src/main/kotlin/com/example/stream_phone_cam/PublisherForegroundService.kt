@@ -1,5 +1,6 @@
 package com.example.stream_phone_cam
 
+import android.content.pm.ApplicationInfo
 import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.app.Service
@@ -30,6 +31,7 @@ import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
+import org.webrtc.Logging
 import org.webrtc.AudioSource
 import org.webrtc.AudioTrack
 import org.webrtc.MediaConstraints
@@ -77,6 +79,7 @@ class PublisherForegroundService : Service() {
     /** PLAN.md §1.5 "Leg A" — see [attachWebRtcLeg]'s doc comment. */
     private var webRtcLeg: WebRtcCameraOutput? = null
     private var webRtcPeerConnectionId: String? = null
+    private var webRtcLoggingEnabled = false
 
     /**
      * Leg A's audio, independent of [webRtcLeg]: see [attachWebRtcAudio]'s
@@ -190,14 +193,32 @@ class PublisherForegroundService : Service() {
      * Stops the camera but only when nothing is being published — a live
      * stream must survive the preview pane unmounting (mode switch, app
      * backgrounded), which is the whole point of owning capture here.
+     *
+     * [onDone] runs once the release has actually finished — or
+     * immediately, synchronously, if there was nothing to release or it was
+     * declined — never merely once this call *returns*, since the real
+     * teardown happens on [scope]'s coroutine. `PublisherChannel`'s
+     * `stopPreview` handler resolves its Dart `Future` from here rather
+     * than synchronously, precisely so a caller that needs the physical
+     * camera genuinely free before doing something else with it (e.g.
+     * `QrScanPage` borrowing it for `mobile_scanner` — see
+     * `qr_scan_page.dart`'s doc comment) can `await` a real signal instead
+     * of a same-thread "request sent" acknowledgement.
      */
-    fun stopCameraPreviewIfIdle() {
-        if (isPublishing) return
-        val capture = captureSession ?: return
+    fun stopCameraPreviewIfIdle(onDone: () -> Unit = {}) {
+        if (isPublishing) {
+            onDone()
+            return
+        }
+        val capture = captureSession ?: run {
+            onDone()
+            return
+        }
         captureSession = null
         scope.launch {
             capture.release()
             emitCamera()
+            onDone()
         }
     }
 
@@ -265,14 +286,36 @@ class PublisherForegroundService : Service() {
                 legs.add(buildLeg(map, width, height, fps, codec, sampleRate, channelCount, audioBitrateKbps))
             }
 
-            if (legs.none { it.session != null }) {
-                fail(legs.firstOrNull()?.message ?: "No destination could be prepared.")
-                return@launch
+            // Attached before either "is there anything to publish" check
+            // below, because as of the broadcast-target selector a PC leg
+            // can now be the *only* leg — a Leg-B-only precondition written
+            // before Leg A existed. `capture.startCamera`/`startScreencast`
+            // + `startMicrophone` above already ran unconditionally, and
+            // WebRtcCameraOutput is just another MediaOutput on that same
+            // mixer, exactly like an RTMP Stream is — there is no
+            // structural reason Leg A can't stand alone.
+            val requestedPeerConnectionId = (request["pcPeerConnectionId"] as? String)?.takeIf { it.isNotBlank() }
+            if (requestedPeerConnectionId != null) {
+                val (legAWidth, legAHeight) = if (usesProjection) width to height else portraitSize(width, height)
+                attachWebRtcLeg(capture, requestedPeerConnectionId, legAWidth, legAHeight)
             }
 
-            (request["pcPeerConnectionId"] as? String)?.takeIf { it.isNotBlank() }?.let { peerConnectionId ->
-                val (legAWidth, legAHeight) = if (usesProjection) width to height else portraitSize(width, height)
-                attachWebRtcLeg(capture, peerConnectionId, legAWidth, legAHeight)
+            if (!PublisherAdmission.hasAnythingToStart(legSnapshots(), webRtcLeg != null)) {
+                val message = if (requestedPeerConnectionId != null) {
+                    // A PC leg was requested (Dart already confirmed the PC
+                    // was connected before calling here) but attaching it
+                    // still failed. attachWebRtcLeg is best-effort/silent by
+                    // design when it's riding along with a live RTMP leg —
+                    // but here it would have been the *only* leg, so
+                    // silently publishing nothing is not acceptable; report
+                    // it for real.
+                    "Could not attach the PC video/audio track — the connection " +
+                        "may have just dropped. Reconnect to the PC and try again."
+                } else {
+                    legs.firstOrNull()?.message ?: "No destination could be prepared."
+                }
+                fail(message)
+                return@launch
             }
 
             for (leg in legs) {
@@ -287,7 +330,10 @@ class PublisherForegroundService : Service() {
                 emit(currentStatusMap())
             }
 
-            if (legs.none { it.status == "live" }) {
+            // A PC-only session (legs empty by design) or a "both" session
+            // where every RTMP destination happened to refuse the
+            // connection can still be live via the already-attached PC leg.
+            if (!PublisherAdmission.isAnythingLive(legSnapshots(), webRtcLeg != null)) {
                 fail(legs.firstOrNull { it.message != null }?.message ?: "No leg connected.")
                 return@launch
             }
@@ -458,9 +504,16 @@ class PublisherForegroundService : Service() {
      * logged): a paired PC that can't receive video yet must never take down
      * the RTMP legs that *are* working, so every failure path here falls
      * through to "no Leg A this session" rather than calling [fail].
+     *
+     * This function itself never fails loudly — but its caller in [start]
+     * may still turn a failed attach into a real, reported [fail] if this
+     * was the *only* leg requested (a PC-only `BroadcastTarget.toPc`
+     * session), since "no Leg A this session" would otherwise mean
+     * publishing nothing at all with no indication why.
      */
     private fun attachWebRtcLeg(capture: CameraEncodeSession, peerConnectionId: String, width: Int, height: Int) {
         if (webRtcLeg != null) return
+        enableWebRtcLoggingOnDebugBuilds()
         val plugin = FlutterWebRTCPlugin.sharedSingleton
         val factory = plugin?.peerConnectionFactory
         if (plugin == null || factory == null) {
@@ -520,6 +573,38 @@ class PublisherForegroundService : Service() {
         track.setEnabled(!isMuted)
         webRtcAudioSource = source
         webRtcAudioTrack = track
+    }
+
+    /**
+     * Routes libwebrtc's own native logging into logcat, on debuggable
+     * builds only.
+     *
+     * Without this, everything libwebrtc decides about Leg A — which video
+     * encoder it picked, whether that encoder initialised, whether it is
+     * producing and sending RTP — happens entirely inside the native
+     * library and is invisible from both sides of the connection. The app's
+     * own logs can only ever show that a track was created and handed over,
+     * which stays true no matter what libwebrtc then does with it.
+     *
+     * Gated on FLAG_DEBUGGABLE and attached lazily the first time a PC leg
+     * is set up rather than at process start, and at LS_WARNING rather than
+     * LS_INFO: this device's PowerVR driver already floods logcat badly
+     * enough to hide real messages (see `scripts/filtered_logcat.ps1`), and
+     * libwebrtc at LS_INFO adds a per-frame stream of its own. Warnings
+     * still carry the things worth catching — encoder init failures,
+     * codec negotiation problems, send errors — without the flood. Raise it
+     * to LS_INFO temporarily when a specific investigation needs it.
+     */
+    private fun enableWebRtcLoggingOnDebugBuilds() {
+        if (webRtcLoggingEnabled) return
+        webRtcLoggingEnabled = true
+        if ((applicationInfo.flags and ApplicationInfo.FLAG_DEBUGGABLE) == 0) return
+        try {
+            Logging.enableLogToDebugOutput(Logging.Severity.LS_WARNING)
+            Log.i(TAG, "Leg A: libwebrtc native logging enabled (debug build)")
+        } catch (e: Throwable) {
+            Log.w(TAG, "Leg A: could not enable libwebrtc logging", e)
+        }
     }
 
     private fun detachWebRtcLeg() {
@@ -729,6 +814,10 @@ class PublisherForegroundService : Service() {
         return created
     }
 
+    /** [legs] reduced to what [PublisherAdmission] needs to know about each. */
+    private fun legSnapshots(): List<PublisherAdmission.LegSnapshot> =
+        legs.map { PublisherAdmission.LegSnapshot(hasSession = it.session != null, status = it.status) }
+
     fun currentStatusMap(): Map<String, Any?> {
         val destinations = legs.map { leg ->
             mapOf(
@@ -739,14 +828,12 @@ class PublisherForegroundService : Service() {
             )
         }
 
-        val status = when {
-            lastError != null && !isPublishing -> "error"
-            !isPublishing && legs.isEmpty() -> "idle"
-            legs.any { it.status == "live" } -> "live"
-            legs.any { it.status == "reconnecting" } -> "reconnecting"
-            isPublishing -> "connecting"
-            else -> "stopped"
-        }
+        val status = PublisherAdmission.aggregateStatus(
+            rtmpLegs = legSnapshots(),
+            webRtcLegAttached = webRtcLeg != null,
+            isPublishing = isPublishing,
+            hasUnclearedError = lastError != null,
+        )
 
         return mapOf(
             "status" to status,

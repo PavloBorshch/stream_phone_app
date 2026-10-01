@@ -1,6 +1,7 @@
 package com.example.stream_phone_cam
 
 import android.content.Context
+import android.util.Log
 import android.util.Size
 import android.view.Surface
 import com.cloudwebrtc.webrtc.utils.EglUtils
@@ -82,6 +83,8 @@ class WebRtcCameraOutput(
     private val pixelTransform: PixelTransform by lazy { PixelTransform.create(context) }
     private val surfaceTextureHelper: SurfaceTextureHelper =
         SurfaceTextureHelper.create("WebRtcCameraOutput", EglUtils.getRootEglBaseContext())
+    private var deliveredFrames = 0L
+    private var lastLoggedSize: Pair<Int, Int>? = null
     private val videoSource = factory.createVideoSource(false)
     private val surface: Surface
 
@@ -92,35 +95,131 @@ class WebRtcCameraOutput(
     val track: VideoTrack = factory.createVideoTrack("phoneCamLegAVideo", videoSource)
 
     init {
-        surfaceTextureHelper.surfaceTexture.setDefaultBufferSize(width, height)
+        setTextureSize(width, height)
         surface = Surface(surfaceTextureHelper.surfaceTexture)
         pixelTransform.videoGravity = VideoGravity.RESIZE_ASPECT_FILL
         pixelTransform.videoEffect = DefaultVideoEffect.shared
         pixelTransform.imageExtent = Size(width, height)
         pixelTransform.surface = surface
 
-        surfaceTextureHelper.startListening { frame -> videoSource.capturerObserver.onFrameCaptured(frame) }
+        // Started before startListening, not after: the helper delivers on
+        // its own thread as soon as it has a listener, and a frame that
+        // reaches an un-started CapturerObserver is discarded.
         videoSource.capturerObserver.onCapturerStarted(true)
+        // No frame.release() here on purpose -- SurfaceTextureHelper
+        // releases its own reference after this callback returns, and
+        // dropping an extra one would under-count the texture's refs. Same
+        // shape as OrientationAwareScreenCapturer.onFrame in the vendored
+        // flutter_webrtc fork.
+        surfaceTextureHelper.startListening { frame ->
+            countFrame(frame)
+            videoSource.capturerObserver.onFrameCaptured(frame)
+        }
         track.setEnabled(true)
+        Log.i(TAG, "Leg A video output started: ${width}x$height, track=${track.id()}")
     }
 
     /** The preview is display-only; encoded buffers are of no interest here. */
     override fun append(buffer: MediaBuffer) = Unit
 
     fun setExtent(width: Int, height: Int) {
-        surfaceTextureHelper.surfaceTexture.setDefaultBufferSize(width, height)
+        setTextureSize(width, height)
         pixelTransform.imageExtent = Size(width, height)
     }
 
+    /**
+     * Sizes both halves of the [SurfaceTextureHelper] handoff — the
+     * `SurfaceTexture`'s buffer (what [PixelTransform] renders into) *and*
+     * the helper's own texture dimensions.
+     *
+     * The second one is not optional and is not implied by the first.
+     * `SurfaceTextureHelper.tryDeliverTextureFrame()` returns early — before
+     * it ever calls `updateTexImage()` — while its texture size is still
+     * unset, logging `W/SurfaceTextureHelper: Texture size has not been
+     * set.`. So without [SurfaceTextureHelper.setTextureSize] nothing ever
+     * *consumes* the SurfaceTexture: every frame HaishinKit renders piles up
+     * in the BufferQueue and is dropped (`I/BufferQueueProducer: queueBuffer:
+     * slot N is dropped` on repeat in logcat), the [videoSource] is never
+     * fed a single frame, and a paired PC sees Leg A's video track negotiate
+     * successfully and then sit at zero decoded frames forever — with the
+     * audio track, which never touches this path, working perfectly and so
+     * making it look like a PC-side receive problem.
+     *
+     * [FlutterTexturePreview] gets away with `setDefaultBufferSize` alone
+     * because Flutter's `TextureRegistry` is the consumer there and drains
+     * the SurfaceTexture itself; transposing that class to a WebRTC sink
+     * (see this class's header) is exactly where the extra call is needed.
+     * `OrientationAwareScreenCapturer.updateSurfaceTextureSize()` in the
+     * vendored flutter_webrtc fork pairs the two calls for the same reason.
+     */
+    private fun setTextureSize(width: Int, height: Int) {
+        // Coerced, not asserted: setTextureSize throws on a non-positive
+        // dimension, and this runs from the constructor — a zero slipping
+        // through from the publish request would turn "a video track that
+        // sends nothing" into "no video track at all", which is strictly
+        // less debuggable.
+        val w = width.coerceAtLeast(2)
+        val h = height.coerceAtLeast(2)
+        if (w != width || h != height) {
+            Log.w(TAG, "Leg A: non-positive extent ${width}x$height, using ${w}x$h")
+        }
+        surfaceTextureHelper.setTextureSize(w, h)
+        surfaceTextureHelper.surfaceTexture.setDefaultBufferSize(w, h)
+    }
+
+    /**
+     * Logs the first frame the [SurfaceTextureHelper] actually delivers,
+     * and then a periodic heartbeat.
+     *
+     * This is the one fact that splits a stalled Leg A in half. Everything
+     * before it — the track existing, `addTrack` succeeding, the PC
+     * answering the renegotiation, the PC attaching its capture sink — is
+     * equally true whether this callback fires once or never, so a PC tile
+     * stuck on "Video Starting..." says nothing about which side is at
+     * fault. If this logs, the phone is feeding libwebrtc and the problem
+     * is encode/transport/PC-side; if it never logs, nothing downstream can
+     * possibly help.
+     */
+    private fun countFrame(frame: org.webrtc.VideoFrame) {
+        deliveredFrames++
+        // First frame and size changes only. A periodic heartbeat was the
+        // obvious thing to add here, but logcat on this hardware is already
+        // hard to read through the driver's own output, and "did anything
+        // ever arrive, and at what size" is the entire diagnostic value —
+        // a rate is visible from the PC's WebRTC stats instead.
+        val size = frame.buffer.width to frame.buffer.height
+        if (deliveredFrames == 1L || size != lastLoggedSize) {
+            lastLoggedSize = size
+            Log.i(
+                TAG,
+                "Leg A: delivered frame #$deliveredFrames " +
+                    "${size.first}x${size.second} rot=${frame.rotation}",
+            )
+        }
+    }
+
+    /**
+     * Torn down producer-first: HaishinKit is detached from the [Surface]
+     * before the [SurfaceTextureHelper] that owns the SurfaceTexture behind
+     * it goes away, and the Surface itself outlives both. The reverse order
+     * leaves [PixelTransform] rendering into a Surface whose SurfaceTexture
+     * has already been disposed.
+     */
     fun release() {
+        pixelTransform.surface = null
+        pixelTransform.screen = null
+
         track.setEnabled(false)
         track.dispose()
         videoSource.capturerObserver.onCapturerStopped()
         videoSource.dispose()
+
         surfaceTextureHelper.stopListening()
         surfaceTextureHelper.dispose()
-        pixelTransform.surface = null
-        pixelTransform.screen = null
         surface.release()
+    }
+
+    private companion object {
+        private const val TAG = "WebRtcCameraOutput"
     }
 }

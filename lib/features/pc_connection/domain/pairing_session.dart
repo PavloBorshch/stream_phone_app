@@ -92,7 +92,14 @@ class QrPairingPayload {
   }
 }
 
-enum PairingAuthMethod { token, pin }
+/// How a hello proves it may connect.
+///
+/// [usb] carries no secret at all: the connection reached the PC through
+/// its own `adb reverse` tunnel, which only exists because this phone's
+/// owner approved that PC's key in Android's "Allow USB debugging?"
+/// prompt. The PC accepts it *only* from a loopback peer, so it can never
+/// be used over a network.
+enum PairingAuthMethod { token, pin, usb }
 
 /// What's needed to attempt a pairing handshake, regardless of whether it
 /// came from a scanned QR or manual host/PIN entry.
@@ -120,6 +127,24 @@ class PairingCandidate {
 
   factory PairingCandidate.fromManualEntry({required String host, required int port, required String pin}) {
     return PairingCandidate(hosts: [host], port: port, wsPath: '/pair', authMethod: PairingAuthMethod.pin, pin: pin);
+  }
+
+  /// Connects to a PC found on the USB tunnel with no pairing step at all.
+  ///
+  /// Always loopback, because that is what the tunnel is -- and what the PC
+  /// requires before it will accept [PairingAuthMethod.usb].
+  factory PairingCandidate.overUsb({
+    required String pcId,
+    required int port,
+    required String wsPath,
+  }) {
+    return PairingCandidate(
+      hosts: const ['127.0.0.1'],
+      port: port,
+      wsPath: wsPath,
+      authMethod: PairingAuthMethod.usb,
+      pcId: pcId,
+    );
   }
 
   /// Every address to try, in preference order. More than one when the PC

@@ -122,10 +122,18 @@ class PublisherChannel(
 
                 // Leaving camera mode releases the camera only when nothing is
                 // being published; the service decides, since only it knows
-                // whether a stream is live.
+                // whether a stream is live. Resolved from stopCameraPreviewIfIdle's
+                // onDone callback — not synchronously here — so a caller that
+                // awaits this actually gets a "camera is free now" signal
+                // rather than just "the request was sent" (see that method's
+                // doc comment).
                 "stopPreview" -> {
-                    service?.stopCameraPreviewIfIdle()
-                    result.success(null)
+                    val svc = service
+                    if (svc == null) {
+                        result.success(null)
+                    } else {
+                        svc.stopCameraPreviewIfIdle { result.success(null) }
+                    }
                 }
 
                 "getStatus" -> result.success(

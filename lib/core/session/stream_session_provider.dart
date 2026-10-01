@@ -10,14 +10,21 @@ import '../../features/battery_performance/domain/battery_performance_settings.d
 import '../../features/battery_performance/domain/device_health.dart';
 import '../../features/battery_performance/domain/performance_guard_decision.dart';
 import '../../features/battery_performance/presentation/battery_performance_provider.dart';
+import '../../features/capture/domain/broadcast_target.dart';
 import '../../features/capture/domain/capture_mode.dart';
+import '../../features/capture/presentation/broadcast_target_provider.dart';
 import '../../features/destinations/presentation/destinations_provider.dart';
 import '../../features/network_settings/domain/active_network.dart';
 import '../../features/notifications/presentation/connection_alert_provider.dart';
 import '../../features/network_settings/domain/network_settings.dart';
 import '../../features/network_settings/presentation/network_settings_provider.dart';
 import '../../features/pc_connection/data/pc_connection_platform.dart';
+import '../../features/pc_connection/data/usb_bridge_discovery.dart';
+import '../../features/pc_connection/presentation/usb_discovery_provider.dart';
+import '../../features/pc_connection/presentation/usb_transport_preference.dart';
+import '../../features/pc_connection/domain/discovered_pc.dart';
 import '../../features/pc_connection/domain/paired_pc.dart';
+import '../../features/pc_connection/presentation/paired_pcs_provider.dart';
 import '../../features/pc_connection/domain/pairing_session.dart';
 import '../../features/pc_connection/domain/pc_connection_status.dart';
 import '../../features/screencast/data/screencast_platform.dart';
@@ -31,6 +38,18 @@ import '../persistence/secure_token_store_provider.dart';
 import 'stream_session_state.dart';
 
 final screencastPlatformProvider = Provider<ScreencastPlatform>((ref) => ScreencastPlatform());
+
+/// Builds a [PcConnectionPlatform] for one connection attempt.
+/// `PcConnectionPlatform` needs a per-call [PairingCandidate] (there's no
+/// single long-lived instance the way `ScreencastPlatform`/`PublisherPlatform`
+/// are), so the seam is a factory rather than a ready instance — overridden
+/// in tests to exercise `connectToPc`'s success path (a connected PC, Leg A
+/// attached) without a real WebRTC/native stack.
+typedef PcConnectionPlatformFactory = PcConnectionPlatform Function(PairingCandidate candidate);
+
+final pcConnectionPlatformFactoryProvider = Provider<PcConnectionPlatformFactory>((ref) {
+  return PcConnectionPlatform.new;
+});
 
 class StreamSessionNotifier extends Notifier<StreamSessionState> {
   PcConnectionPlatform? _pcConnection;
@@ -89,7 +108,12 @@ class StreamSessionNotifier extends Notifier<StreamSessionState> {
     ref.listen<AsyncValue<ThermalStatus>>(thermalStatusProvider, (_, _) => _evaluateGuards());
     ref.listen<BatteryPerformanceSettings>(batteryPerformanceProvider, (_, _) => _evaluateGuards());
 
-    return StreamSessionState.initial;
+    // Restores the user's broadcast-target choice from the previous session
+    // (BroadcastTargetRepository) — everything else in `initial` starts
+    // fresh on every launch, but this one is meant to survive a restart the
+    // same way video/audio settings do.
+    final broadcastTarget = ref.watch(broadcastTargetRepositoryProvider).read();
+    return StreamSessionState.initial.copyWith(broadcastTarget: broadcastTarget);
   }
 
   /// Bytes reported by the publisher are cumulative *within one session* and
@@ -276,6 +300,19 @@ class StreamSessionNotifier extends Notifier<StreamSessionState> {
     state = state.copyWith(mode: mode);
   }
 
+  /// Broadcast-target selector action (capture screen, next to the mode
+  /// toggle). Pure state switch plus persistence — mirrors [setMode] but
+  /// also writes through `BroadcastTargetRepository` so the choice survives
+  /// a restart. The capture screen disables the selector while a stream is
+  /// live (see `BroadcastTargetSelector.enabled`), since the native
+  /// publisher session is configured once at `start()` and has no path to
+  /// retarget the PC/services split mid-stream.
+  Future<void> setBroadcastTarget(BroadcastTarget target) async {
+    if (target == state.broadcastTarget) return;
+    state = state.copyWith(broadcastTarget: target);
+    await ref.read(broadcastTargetRepositoryProvider).write(target);
+  }
+
   /// Record-button action. In camera mode this starts publishing straight
   /// away; in screencast mode the system consent dialog has to be cleared
   /// first, so it only records the intent and requests capture — see
@@ -305,64 +342,123 @@ class StreamSessionNotifier extends Notifier<StreamSessionState> {
       return;
     }
 
-    final video = ref.read(videoSettingsProvider);
-    final audio = ref.read(audioSettingsProvider);
-    final repository = ref.read(destinationsRepositoryProvider);
-    final destinations = repository.read().where((d) => d.enabled).toList();
+    // The broadcast-target selection (capture screen, next to the mode
+    // toggle) decides which of Leg A / Leg B this session asks for. Guard
+    // the invalid combination up front with a message that says exactly
+    // what to fix, rather than falling through to a generic "no usable
+    // destination" once legs turn out empty.
+    final target = state.broadcastTarget;
+    final pcConnected = state.pcConnectionEvent.phase == PcConnectionPhase.connected;
+    final pcPeerConnectionId = target.includesPc ? _pcConnection?.peerConnectionId : null;
 
-    final legs = <PublishLeg>[];
-    final missingKeys = <String>[];
-    for (final destination in destinations) {
-      final streamKey = await repository.readStreamKey(destination.secureKeyId);
-      if (streamKey == null || streamKey.isEmpty) {
-        // The destination survives in the list but its key is gone from
-        // secure storage (a restore onto a new device does exactly this) —
-        // publish the rest rather than failing the whole session.
-        missingKeys.add(destination.displayName);
-        continue;
-      }
-      legs.add(
-        PublishLeg(
-          destinationId: destination.id,
-          displayName: destination.displayName,
-          url: destination.rtmpUrl,
-          streamKey: streamKey,
-          video: destination.overrides.applyTo(video),
-        ),
-      );
-    }
-
-    // PLAN.md §1.5's "Leg A", video-only (see HELP.md §8's "Leg A media
-    // track" section for the protocol and PLAN.md Phase 5's "Outstanding"
-    // note for what's still missing — no audio yet, and nothing on the PC
-    // side can receive this until that repo's own work lands). Riding along
-    // with at least one Leg B destination rather than standing alone: the
-    // native publisher session (camera/mic + mixer) only exists while a
-    // Leg B stream is running, so a PC-only stream with zero RTMP
-    // destinations still isn't possible — see the `legs.isEmpty` branch
-    // below.
-    final includePcLeg = state.pcConnectionEvent.phase == PcConnectionPhase.connected;
-    final pcPeerConnectionId = includePcLeg ? _pcConnection?.peerConnectionId : null;
-
-    if (legs.isEmpty) {
+    if (target.includesPc && (!pcConnected || pcPeerConnectionId == null)) {
+      // "No PC is connected" is true but unhelpful on its own, and it was
+      // actively misleading over USB: a user who has plugged the cable in
+      // and can see the phone on the PC has every reason to think the PC
+      // *is* connected. What is actually missing is one of several
+      // different things, each needing a different action — so say which.
       state = state.copyWith(
         publisherEvent: PublisherEvent(
           status: PublisherStatus.error,
-          message: switch ((missingKeys.isNotEmpty, includePcLeg)) {
-            (true, _) => 'No usable destination: the stream key for '
-                '${missingKeys.join(', ')} is missing. Re-enter it under '
-                'Settings > Destinations & Accounts.',
-            (false, true) => 'Streaming to a paired PC on its own (with no '
-                'RTMP destination) isn\'t supported yet. Add an RTMP '
-                'destination under Settings > Destinations & Accounts to '
-                'stream — the paired PC will also receive the video.',
-            (false, false) => 'No enabled destination — add one under '
-                'Settings > Destinations & Accounts.',
-          },
+          message: await _noPcConnectedMessage(),
         ),
       );
       return;
     }
+    // From here on, `target.includesPc` implies both a connected PC and a
+    // resolved peer connection id — checked together above so a stale
+    // `_pcConnection` (dropped between the phase check and this call, see
+    // `PublishRequest.pcPeerConnectionId`'s doc comment) is reported as
+    // clearly as an outright disconnect, rather than silently publishing
+    // without Leg A.
+    //
+    // A PC reached over the USB tunnel takes the other route. Leg A's
+    // WebRTC tracks cannot cross an `adb reverse` tunnel — it carries TCP
+    // between two loopback addresses, and ICE has no candidate pair that
+    // works across it — so attaching them would negotiate successfully,
+    // send nothing, and leave the PC showing a phone tile that never gets a
+    // frame. The cable's media rides an ordinary RTMP leg to the tunnelled
+    // port instead, which is a single TCP connection and so exactly what
+    // the tunnel does carry.
+    final overUsb = _pcConnection?.connectedHost == '127.0.0.1';
+    final includePcLeg = target.includesPc && !overUsb;
+
+    final video = ref.read(videoSettingsProvider);
+    final audio = ref.read(audioSettingsProvider);
+    final repository = ref.read(destinationsRepositoryProvider);
+    final enabledDestinations = repository.read().where((d) => d.enabled).toList();
+
+    if (target.includesServices && enabledDestinations.isEmpty) {
+      state = state.copyWith(
+        publisherEvent: const PublisherEvent(
+          status: PublisherStatus.error,
+          message: 'No enabled destination — add one under Settings > '
+              'Destinations & Accounts, or change what you\'re streaming to.',
+        ),
+      );
+      return;
+    }
+
+    final legs = <PublishLeg>[];
+    if (target.includesServices) {
+      final missingKeys = <String>[];
+      for (final destination in enabledDestinations) {
+        final streamKey = await repository.readStreamKey(destination.secureKeyId);
+        if (streamKey == null || streamKey.isEmpty) {
+          // The destination survives in the list but its key is gone from
+          // secure storage (a restore onto a new device does exactly this) —
+          // publish the rest rather than failing the whole session.
+          missingKeys.add(destination.displayName);
+          continue;
+        }
+        legs.add(
+          PublishLeg(
+            destinationId: destination.id,
+            displayName: destination.displayName,
+            url: destination.rtmpUrl,
+            streamKey: streamKey,
+            video: destination.overrides.applyTo(video),
+          ),
+        );
+      }
+
+      if (legs.isEmpty) {
+        // Every enabled destination's stream key was missing — fatal even
+        // when the PC leg is also requested ("Both"): the user configured
+        // services and expects them to work, so silently falling back to
+        // PC-only would hide a real problem instead of surfacing it.
+        state = state.copyWith(
+          publisherEvent: PublisherEvent(
+            status: PublisherStatus.error,
+            message: 'No usable destination: the stream key for '
+                '${missingKeys.join(', ')} is missing. Re-enter it under '
+                'Settings > Destinations & Accounts.',
+          ),
+        );
+        return;
+      }
+    }
+
+    if (target.includesPc && overUsb) {
+      // Published at the capture settings with no per-destination
+      // overrides: this is not a destination the user configured, it is the
+      // cable, and the PC compositor wants whatever the phone is capturing.
+      legs.add(
+        PublishLeg(
+          destinationId: 'usb',
+          displayName: 'PC (USB)',
+          url: 'rtmp://127.0.0.1:${UsbBridgeDiscovery.mediaPort}/live',
+          streamKey: 'phone',
+          video: video,
+        ),
+      );
+    }
+
+    // `legs` is intentionally empty here exactly when `target ==
+    // BroadcastTarget.toPc` over a *network* connection (services never
+    // requested, media riding Leg A instead) — the native publisher
+    // supports the PC leg as the only leg, so this is a normal request
+    // handed to native, not an error condition caught here.
 
     _lastBytesSent = 0;
     _lastWarning = null;
@@ -432,7 +528,8 @@ class StreamSessionNotifier extends Notifier<StreamSessionState> {
   /// .pcConnectionEvent], same role the screencast subscription above plays
   /// for [StreamSessionState.screencastEvent].
   Future<void> connectToPc(PairedPc pc) async {
-    await disconnectFromPc();
+    _userDisconnectedPc = false;
+    await _teardownPcConnection();
 
     final token = await ref.read(secureTokenStoreProvider).read(pc.secureTokenId);
     if (token == null) {
@@ -447,31 +544,215 @@ class StreamSessionNotifier extends Notifier<StreamSessionState> {
       return;
     }
 
+    final usbHost = await _usbHostFor(pc);
     final candidate = PairingCandidate(
-      // Every address this PC advertised when it was paired, last working
-      // one first — the phone may now be on a different network than it
-      // paired on, so the previously-working address isn't guaranteed.
-      hosts: pc.knownHosts,
+      // The cable, when it is being used, is the *only* address dialled --
+      // not merely the first.
+      //
+      // PcSignalingClient.connect races every host and keeps whichever
+      // answers first, which is right for picking between a PC's Ethernet
+      // and Wi-Fi addresses (they are equivalent) but wrong here: USB and
+      // Wi-Fi are different transports with different media paths, and
+      // racing them makes which one you get a coin flip. That is exactly
+      // what happened -- a phone with a cable plugged in kept winning the
+      // race over Wi-Fi and streaming WebRTC, while the USB source in the
+      // compositor sat waiting for an RTMP publisher that was never coming.
+      //
+      // Falling back to the remembered network addresses when no cable is
+      // in use, last working one first: the phone may be on a different
+      // network than it paired on.
+      hosts: usbHost != null ? [usbHost] : pc.knownHosts,
       port: pc.lastKnownPort,
       wsPath: pc.wsPath,
       authMethod: PairingAuthMethod.token,
       pcId: pc.pcId,
       token: token,
     );
-    final connection = PcConnectionPlatform(candidate);
+    _attach(ref.read(pcConnectionPlatformFactoryProvider)(candidate));
+    await _pcConnection!.connect();
+  }
+
+  /// Subscribes to a connection's events and installs the shared policy for
+  /// them.
+  void _attach(
+    PcConnectionPlatform connection, {
+    void Function(String token)? onPaired,
+  }) {
     _pcConnection = connection;
     _pcConnectionSubscription = connection.events().listen((event) {
       state = state.copyWith(pcConnectionEvent: event);
+
+      if (event.phase == PcConnectionPhase.connected) {
+        final token = connection.issuedToken;
+        if (token != null) onPaired?.call(token);
+        return;
+      }
+
+      // `disconnected` is PcConnectionPlatform giving up after its own
+      // bounded backoff. Its candidate's host list is fixed for its
+      // lifetime, so a session pinned to the cable would keep retrying
+      // loopback forever after the cable was pulled. Dropping the session
+      // lets the next auto-connect tick re-decide the transport against
+      // what is actually plugged in now.
+      if (event.phase == PcConnectionPhase.disconnected &&
+          identical(_pcConnection, connection)) {
+        Future.microtask(() {
+          if (identical(_pcConnection, connection)) _teardownPcConnection();
+        });
+      }
     });
-    await connection.connect();
+  }
+
+  /// Explains *why* no PC is connected, in terms of what the user can do
+  /// about it right now.
+  Future<String> _noPcConnectedMessage() async {
+    final paired = ref.read(pairedPcRepositoryProvider).read();
+    final overUsb = await ref.read(usbBridgeDiscoveryProvider).find();
+
+    // A cable needs no pairing at all now, so a PC on the tunnel is always
+    // "about to connect" rather than "needs setting up" -- the auto-connect
+    // is already on its way.
+    if (overUsb != null) {
+      return 'Connecting to "${overUsb.pcName}" over USB - try again in a '
+          'moment.';
+    }
+
+    return paired.isEmpty
+        ? 'No PC is paired yet. Plug one in over USB, or pair it under '
+              'Settings > PC Connection.'
+        : 'No PC is connected. Connect to a paired PC under '
+              'Settings > PC Connection, or change what you are streaming to.';
+  }
+
+  /// `127.0.0.1` when this PC should be reached over the USB cable right
+  /// now, or null to use the network.
+  ///
+  /// Null whenever the user has turned [preferUsbTransportProvider] off, no
+  /// tunnel is up, or the PC behind the tunnel is a different one. The
+  /// tunnel's address is always loopback, which means nothing until adb has
+  /// actually wired it to a PC, so it has to be probed rather than
+  /// remembered.
+  Future<String?> _usbHostFor(PairedPc pc) async {
+    try {
+      if (!ref.read(preferUsbTransportProvider)) return null;
+      final found = await ref.read(usbBridgeDiscoveryProvider).find();
+      if (found == null || found.pcId != pc.pcId) return null;
+      return found.host;
+    } catch (e) {
+      // Never let USB discovery break a connect the network could handle.
+      debugPrint('connectToPc: USB discovery failed: $e');
+      return null;
+    }
   }
 
   Future<void> disconnectFromPc() async {
+    _userDisconnectedPc = true;
+    await _teardownPcConnection();
+  }
+
+  Future<void> _teardownPcConnection() async {
     await _pcConnectionSubscription?.cancel();
     _pcConnectionSubscription = null;
     await _pcConnection?.dispose();
     _pcConnection = null;
     state = state.copyWith(pcConnectionEvent: PcConnectionEvent.idle);
+  }
+
+  /// Set by an explicit [disconnectFromPc]; cleared by an explicit
+  /// [connectToPc]. Only the USB auto-connect consults it.
+  bool _userDisconnectedPc = false;
+
+  /// Connects to whatever PC is on the USB tunnel, if anything is.
+  ///
+  /// Driven by [usbAutoConnectProvider] from the app root rather than by a
+  /// timer in here: this is app-level background behaviour, and owning a
+  /// periodic timer inside a provider that every screen builds meant every
+  /// widget test that pumped one could never settle.
+  ///
+  /// Without this, plugging the cable in did nothing on the phone: the PC
+  /// would show the device and set up its tunnels, the phone would show
+  /// nothing at all, and starting a stream failed with "No PC is
+  /// connected" -- correctly, but for a reason the cable gave no hint of.
+  /// The USB link is unambiguous in a way a network is not (there is
+  /// exactly one machine on the other end of it, and the user just plugged
+  /// it in), so connecting without being asked is the behaviour that
+  /// matches what the cable already implies.
+  ///
+  /// Deliberately never *pairs*: it only connects to a PC that already has
+  /// a stored token. Being reachable is not authorisation, and a cable
+  /// silently granting a PC access to the camera would be a real hole --
+  /// first-time pairing still goes through the QR/PIN handshake.
+  Future<void> maybeAutoConnectOverUsb() async {
+    if (_userDisconnectedPc) return;
+    // A live session object means either a working connection or
+    // PcConnectionPlatform's own backoff retrying one; both are better
+    // than starting over from here.
+    if (_pcConnection != null) return;
+
+    try {
+      if (!ref.read(preferUsbTransportProvider)) return;
+      final found = await ref.read(usbBridgeDiscoveryProvider).find();
+      if (found == null) return;
+
+      // A PC already paired over the network keeps its stored token: that
+      // identity is what the compositor's sources are keyed to, and
+      // re-authenticating as a stranger over the cable would orphan them.
+      for (final pc in ref.read(pairedPcRepositoryProvider).read()) {
+        if (pc.pcId != found.pcId) continue;
+        debugPrint('USB: auto-connecting to paired PC ${pc.displayName}');
+        await connectToPc(pc);
+        return;
+      }
+
+      debugPrint('USB: auto-connecting to unpaired PC ${found.pcName}');
+      await connectOverUsb(found);
+    } catch (e) {
+      debugPrint('USB auto-connect check failed: $e');
+    }
+  }
+
+  /// Connects to a PC over the USB cable with no pairing step at all.
+  ///
+  /// The cable is the credential. The PC accepts this only from a loopback
+  /// peer — meaning a connection that arrived through its own `adb reverse`
+  /// tunnel, which exists only because this phone's owner approved that
+  /// PC's key in Android's "Allow USB debugging?" prompt. Anyone who can
+  /// reach it therefore already holds adb access to this phone, which is
+  /// strictly more than a camera feed. See [PairingAuthMethod.usb].
+  ///
+  /// The PC still answers with an ordinary pairing token, which is stored
+  /// like any other, so the phone keeps a stable identity across reconnects
+  /// and the PC shows up in the paired list where it can be revoked.
+  /// Plugging in is a real pairing gesture — just not one that needs a PIN
+  /// typed in.
+  Future<void> connectOverUsb(DiscoveredPc pc) async {
+    _userDisconnectedPc = false;
+    await _teardownPcConnection();
+
+    final candidate = PairingCandidate.overUsb(
+      pcId: pc.pcId,
+      port: pc.port,
+      wsPath: pc.wsPath,
+    );
+    _attach(
+      ref.read(pcConnectionPlatformFactoryProvider)(candidate),
+      // The token the PC mints for this cable arrives with the successful
+      // handshake; persisting it is what turns "connected right now" into a
+      // pairing the user can see and revoke.
+      onPaired: (token) => unawaited(
+        ref
+            .read(pairedPcsProvider.notifier)
+            .addFromPairing(
+              pcId: pc.pcId,
+              displayName: pc.pcName,
+              host: '127.0.0.1',
+              port: pc.port,
+              wsPath: pc.wsPath,
+              token: token,
+            ),
+      ),
+    );
+    await _pcConnection!.connect();
   }
 }
 

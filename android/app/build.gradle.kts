@@ -63,8 +63,15 @@ dependencies {
     // modules only — unlike HaishinKit.swift there is no SRT module on
     // Android, so `srt://` destinations are rejected on this platform until
     // libsrt is bridged directly (PLAN.md §3.2).
-    implementation("com.github.HaishinKit.HaishinKit~kt:haishinkit:0.18.2")
-    implementation("com.github.HaishinKit.HaishinKit~kt:rtmp:0.18.2")
+    //
+    // As of 2026-08-31, vendored locally under third_party/HaishinKit.kt
+    // (see its PATCH_NOTES.md) instead of pulled from JitPack — needed to
+    // patch com.haishinkit.gles/com.haishinkit.gles.screen for the
+    // PowerVR/MediaTek GPU-driver EGL bug diagnosed that day (black camera
+    // preview + "no video reaches PC", present even without Leg A/WebRTC).
+    // Same pattern as third_party/flutter_webrtc's vendored-and-patched fork.
+    implementation(project(":haishinkit"))
+    implementation(project(":rtmp"))
 
     // PLAN.md §1.5 "Leg A" (phone -> paired PC video over the existing
     // WebRTC data connection): WebRtcCameraOutput.kt builds an org.webrtc

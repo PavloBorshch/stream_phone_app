@@ -36,6 +36,24 @@ No other files were touched. No iOS patch exists yet — Leg A is Android-only
 so far, matching PLAN.md's existing Android/iOS split for the rest of the
 publisher.
 
+## Why a real stream id (added 2026-08-31)
+
+`attachExternalTrack`'s `addTrack` call originally passed an **empty**
+`streamIds` list (`new ArrayList<>()`). Per the WebRTC spec this is valid —
+it produces an `a=msid:- <trackId>` (no stream) in the resulting SDP offer —
+but it's also a spec-legal edge case some receivers don't handle, if they
+resolve a remote track by walking `RtpReceiver.streams()` rather than
+indexing purely by track id. Found while triaging the "Phone Connected — No
+Video" bug (2026-08-31) alongside pc-agent, whose PC-side native capture
+sink does exactly that stream-keyed lookup — not the actual root cause of
+that bug (which turned out to be a HaishinKit.kt/GPU-driver issue on the
+repro device, see PLAN.md/MISTAKES.md), but a real, independent latent
+defect worth fixing regardless. Both `attachWebRtcLeg`'s video track and
+`attachWebRtcAudio`'s audio track now go through this same
+`attachExternalTrack`, so both are added under one shared stream id,
+`"phoneCamLegA"` (a constant in `MethodCallHandlerImpl`) — see HELP.md §8 for
+what this means for the PC-side SDP.
+
 `attachExternalTrack`/`detachExternalTrack` are track-kind-agnostic (they
 already branch on `track.kind()` into `LocalVideoTrack`/`LocalAudioTrack`),
 so Leg A's audio track (added 2026-08-26, `PublisherForegroundService
